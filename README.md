@@ -1,1 +1,1 @@
-Prvi zadatak
+Zadaca operacijski sustavi
