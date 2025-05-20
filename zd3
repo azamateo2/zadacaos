@@ -1,0 +1,143 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <time.h>
+
+// Deklaracija globalnih varijabli
+int *ULAZ, *BROJ, *REZ; // Polja za međusobno isključivanje dretvi i stanje stolova
+int brSt, brDr;  // Broj stolova (brSt) i broj dretvi (brDr)
+pthread_t *dretve;  // Niz dretvi
+
+// Funkcija koja vraća najveći broj koji je trenutno u BROJ
+int max_broj() {
+    int max = 0; // Početna vrijednost za najveći broj
+    for (int i = 0; i < brDr; i++) {
+        if (BROJ[i] > max) // Provjera da li je trenutni broj veći od trenutnog maksimuma
+            max = BROJ[i];
+    }
+    return max; // Vraća najveći broj
+}
+
+// Funkcija koja omogućuje dretvi i da uđe u kritični odsječek
+void udji_u_kriticni_odsjecak(int i) {
+    ULAZ[i] = 1;  // Označi da dretva i želi ući u kritični odsječek
+    BROJ[i] = max_broj() + 1;  // Postavlja svoj broj na najveći broj + 1
+    ULAZ[i] = 0;  // Prestaje označavati da želi ući
+
+    // Čeka dok ostale dretve ne završe postavljanje svojih brojeva
+    for (int j = 0; j < brDr; j++) {
+        while (ULAZ[j]) {}  // Čekaj da dretva j završi s postavljanjem svog BROJ
+        while (BROJ[j] != 0 &&  // Čekaj da dretva j završi
+              (BROJ[j] < BROJ[i] || (BROJ[j] == BROJ[i] && j < i))) {
+            // Čekaj jer dretva j ima prioritet
+        }
+    }
+}
+
+// Funkcija koja omogućuje dretvi da izađe iz kritičnog odsječka
+void izadji_iz_kriticnog_odsjecka(int i) {
+    BROJ[i] = 0;  // Postavi BROJ dretve i na 0, označava da je izašla iz kritičnog odsječka
+}
+
+// Funkcija koja provjerava je li svi stolovi zauzeti
+int sve_zauzeto() {
+    for (int i = 0; i < brSt; i++) {
+        if (REZ[i] == -1)  // Ako postoji stol koji nije zauzet
+            return 0;
+    }
+    return 1;  // Svi stolovi su zauzeti
+}
+
+// Funkcija koja ispisuje trenutno stanje rezervacija
+void ispisi_stanje() {
+    for (int i = 0; i < brSt; i++) {
+        if (REZ[i] == -1)
+            printf("-");  // Ako je stol slobodan, ispisuje '-'
+        else
+            printf("%d", REZ[i] + 1);  // Ispisuje broj dretve koja je zauzela stol
+    }
+    printf("\n");
+}
+
+// Funkcija koja simulira rezervaciju stola za dretvu
+void *rezervacija(void *arg) {
+    int id = *((int *)arg);  // ID dretve koji se prosljeđuje kroz argument
+    free(arg); // Oslobađa memoriju za ID
+
+    while (1) {
+        sleep(1);  // Pauza prije nove pokušane rezervacije
+
+        // Ako su svi stolovi zauzeti, prekida
+        if (sve_zauzeto())
+            break;
+
+        // Odabir stola za rezervaciju
+        int stol = rand() % brSt; // Nasumično bira stol
+        printf("Dretva %d: odabirem stol %d\n", id + 1, stol + 1);
+        fflush(stdout); // Osigurava ispis u konzolu
+
+        // Pokušaj ulaska u kritični odsječak
+        udji_u_kriticni_odsjecak(id);
+
+        // Ako je stol slobodan, rezervira ga
+        if (REZ[stol] == -1) {
+            REZ[stol] = id; // Rezervira stol za dretvu
+            printf("Dretva %d: rezerviram stol %d, stanje:\n", id + 1, stol + 1);
+        } else {
+            printf("Dretva %d: neuspjela rezervacija stola %d, stanje:\n", id + 1, stol + 1);
+        }
+
+        // Ispisuje trenutno stanje stolova
+        ispisi_stanje();
+        // Izađe iz kritičnog odsječka
+        izadji_iz_kriticnog_odsjecka(id);
+    }
+
+    pthread_exit(NULL);  // Završava dretvu
+}
+
+// Glavna funkcija koja inicijalizira i pokreće dretve
+int main(int argc, char *argv[]) {
+    // Provjera ispravnosti broja argumenata
+    if (argc != 3) {
+        printf("Upotreba: %s <broj_dretvi> <broj_stolova>\n", argv[0]);
+        return 1;
+    }
+
+    // Inicijalizacija broja dretvi i stolova prema argumentima
+    brDr = atoi(argv[1]); // Broj dretvi
+    brSt = atoi(argv[2]); // Broj stolova
+
+    // Alociranje memorije za zajedničke varijable
+    ULAZ = calloc(brDr, sizeof(int));  // Ulazna vrata za dretve
+    BROJ = calloc(brDr, sizeof(int));  // Brojevi dretvi za međusobno isključivanje
+    REZ  = malloc(brSt * sizeof(int));  // Stanje stolova
+    dretve = malloc(brDr * sizeof(pthread_t));  // Niz dretvi
+
+    // Inicijalizacija stolova (svi su slobodni)
+    for (int i = 0; i < brSt; i++)
+        REZ[i] = -1;
+
+    srand(time(NULL));  // Inicijalizacija generatora slučajnih brojeva
+
+    // Kreiranje dretvi
+    for (int i = 0; i < brDr; i++) {
+        int *id = malloc(sizeof(int)); // Dinamička alokacija memorije za ID dretve
+        *id = i;
+        pthread_create(&dretve[i], NULL, rezervacija, id);  // Kreira dretvu za rezervaciju
+    }
+
+    // Čekanje da sve dretve završe
+    for (int i = 0; i < brDr; i++) {
+        pthread_join(dretve[i], NULL);  // Čeka da dretva završi
+    }
+
+    // Oslobađanje zauzete memorije
+    free(ULAZ);
+    free(BROJ);
+    free(REZ);
+    free(dretve);
+
+    return 0; // Završava program
+}
