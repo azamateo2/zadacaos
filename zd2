@@ -1,0 +1,97 @@
+#include <stdio.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <unistd.h>
+
+// Globalni pokazivači za varijable u dijeljenoj memoriji
+// PRAVO – određuje koji proces trenutno ima prednost
+// ZASTAVICA – polje koje označava želi li proces 0 ili 1 ući u kritični odsječak
+int *PRAVO, *ZASTAVICA;
+int pravoId, zastavicaId;
+
+// Funkcija za ulazak u kritični odsječak
+void udi_u_kriticni_odsjecak(int i, int j) {
+    if (*PRAVO == j) { // Provjera je li pravo na kritični odsječak kod drugog procesa
+        ZASTAVICA[i] = 0; // Postavljanje zastavice na 0 (proces nije spreman)
+        while (*PRAVO == j) { // Čekanje dok drugi proces ima pravo
+            // aktivno čekanje
+        }
+        ZASTAVICA[i] = 1; // Postavljanje zastavice na 1 (proces je spreman)
+    }
+}
+
+// Funkcija za izlazak iz kritičnog odsječka
+void izadji_iz_kriticnog_odsjecka(int i, int j) {
+    *PRAVO = j; // Dodjela prava drugom procesu
+    ZASTAVICA[i] = 0; // Postavljanje zastavice na 0 (proces nije spreman)
+}
+
+// Funkcija koja simulira rad procesa
+void proc(int i, int j) {
+    for (int k = 1; k <= 5; k++) { // Petlja za 5 iteracija
+        udi_u_kriticni_odsjecak(i, j); // Ulazak u kritični odsječak
+        for (int m = 1; m <= 5; m++) { // Simulacija rada unutar kritičnog odsječka
+            printf("i: %d, k: %d, m: %d\n", i, k, m); // Ispis trenutnog stanja
+            sleep(1); // Pauza od 1 sekunde
+        }
+        izadji_iz_kriticnog_odsjecka(i, j); // Izlazak iz kritičnog odsječka
+    }
+}
+
+// Funkcija za brisanje dijeljene memorije i izlazak iz programa
+void brisi() {
+    shmdt(PRAVO); // Odspajanje od dijeljene memorije za PRAVO
+    shmdt(ZASTAVICA); // Odspajanje od dijeljene memorije za ZASTAVICA
+    shmctl(pravoId, IPC_RMID, NULL); // Brisanje segmenta dijeljene memorije za PRAVO
+    shmctl(zastavicaId, IPC_RMID, NULL); // Brisanje segmenta dijeljene memorije za ZASTAVICA
+    exit(0); // Izlazak iz programa
+}
+
+int main() {
+    // Kreiranje segmenta dijeljene memorije za varijablu PRAVO
+    // IPC_PRIVATE označava da je segment privatni i dostupan samo procesima koji ga eksplicitno dijele
+    // sizeof(int) određuje veličinu segmenta (jedan integer)
+    // IPC_CREAT | 0660 označava da se segment kreira ako ne postoji i postavlja prava pristupa (read/write za vlasnika i grupu)
+    pravoId = shmget(IPC_PRIVATE, sizeof(int), IPC_CREAT | 0660);
+
+    // Kreiranje segmenta dijeljene memorije za niz ZASTAVICA
+    // sizeof(int) * 2 određuje veličinu segmenta (dva integera za dva procesa)
+    zastavicaId = shmget(IPC_PRIVATE, sizeof(int) * 2, IPC_CREAT | 0660);
+
+    // Spajanje na segment dijeljene memorije za PRAVO
+    // shmat vraća pokazivač na prvi bajt segmenta dijeljene memorije
+    // NULL označava da operativni sustav odabire adresu na koju će mapirati segment
+    PRAVO = (int *)shmat(pravoId, NULL, 0);
+
+    // Spajanje na segment dijeljene memorije za ZASTAVICA
+    // Kao i kod PRAVO, vraća pokazivač na prvi bajt segmenta
+    ZASTAVICA = (int *)shmat(zastavicaId, NULL, 0);
+
+    *PRAVO = 0; // Inicijalizacija prava na 0
+    ZASTAVICA[0] = 0; // Inicijalizacija zastavice za proces 0
+    ZASTAVICA[1] = 0; // Inicijalizacija zastavice za proces 1
+
+    signal(SIGINT, brisi); // Postavljanje signala za brisanje memorije pri prekidu programa
+
+    pid_t pid1 = fork(); // Stvaranje prvog djeteta procesa
+    if (pid1 == 0) {
+        proc(1, 0); // Pokretanje funkcije proc za proces 1
+        exit(0); // Izlazak iz djeteta procesa
+    }
+
+    pid_t pid2 = fork(); // Stvaranje drugog djeteta procesa
+    if (pid2 == 0) {
+        proc(0, 1); // Pokretanje funkcije proc za proces 0
+        exit(0); // Izlazak iz djeteta procesa
+    }
+
+    waitpid(pid1, NULL, 0); // Čekanje završetka prvog djeteta procesa
+    waitpid(pid2, NULL, 0); // Čekanje završetka drugog djeteta procesa
+    brisi(); // Brisanje dijeljene memorije i završetak programa
+
+    return 0; // Povratak iz glavne funkcije
+}
