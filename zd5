@@ -1,0 +1,110 @@
+#include <stdio.h>              // Za funkcije printf i fflush
+#include <stdlib.h>             // Za malloc i free
+#include <pthread.h>            // Za rad s dretvama (threadovima)
+#include <unistd.h>             // Za funkciju sleep
+
+#define N 5                     // Broj filozofa (i vilica)
+
+
+enum {MISLI, GLADAN, JEDE};
+
+pthread_mutex_t monitor = PTHREAD_MUTEX_INITIALIZER;   // Glavna brava za sinkronizaciju pristupa zajedničkim podacima
+pthread_cond_t red[N];          // Niz uvjetnih varijabli, jedan za svakog filozofa
+int filozof[N];                 // Stanja svakog filozofa: MISLI, GLADAN, JEDE
+int vilica[N];                  // Stanje svake vilice: 1 = slobodna, 0 = zauzeta
+
+// Funkcija za ispis stanja svih filozofa
+void ispiši_stanje() {
+    printf("Stanje filozofa: ");         // Naslov ispisa
+    for (int i = 0; i < N; i++) {        // Prolazak kroz svakog filozofa
+        if (filozof[i] == MISLI) printf("O ");      // O = misli
+        else if (filozof[i] == GLADAN) printf("o "); // o = gladan
+        else if (filozof[i] == JEDE) printf("X ");   // X = jede
+    }
+    printf("\n");                // Novi red nakon ispisa
+    fflush(stdout);             // Forsira ispis na ekranu odmah
+}
+
+// Funkcija kojom filozof "misli"
+void misliti() {
+    sleep(3);   // Simulacija razmišljanja (pauza od 3 sekunde)
+}
+
+// Funkcija kojom filozof pokušava jesti
+void jesti(int n) {
+    pthread_mutex_lock(&monitor);       // Zaključavanje monitora (kritične sekcije)
+
+    filozof[n] = GLADAN;                // Filozof postaje gladan
+    ispiši_stanje();                    // Ispis trenutnog stanja
+
+    // Čeka dok obje vilice (lijeva i desna) nisu slobodne
+    while (vilica[n] == 0 || vilica[(n + 1) % N] == 0) {
+        pthread_cond_wait(&red[n], &monitor);   // Čeka svoj red (blokira se)
+    }
+
+    vilica[n] = 0;                    // Zauzima lijevu vilicu
+    vilica[(n + 1) % N] = 0;          // Zauzima desnu vilicu
+    filozof[n] = JEDE;                // Počinje jesti
+    ispiši_stanje();                  // Ispis trenutnog stanja
+
+    pthread_mutex_unlock(&monitor);  // Otključavanje monitora
+
+    sleep(2);   // Simulacija jedenja (pauza od 2 sekunde)
+}
+
+// Funkcija kojom filozof pušta vilice nakon što je jeo
+void pusti_vilice(int n) {
+    pthread_mutex_lock(&monitor);        // Zaključavanje monitora
+
+    filozof[n] = MISLI;                  // Filozof opet misli
+    vilica[n] = 1;                       // Oslobađa lijevu vilicu
+    vilica[(n + 1) % N] = 1;             // Oslobađa desnu vilicu
+
+    // Signalizira susjednim filozofima da provjere mogu li oni jesti
+    pthread_cond_signal(&red[(n + N - 1) % N]);  // Lijevi susjed
+    pthread_cond_signal(&red[(n + 1) % N]);      // Desni susjed
+
+    ispiši_stanje();                      // Ispis trenutnog stanja
+
+    pthread_mutex_unlock(&monitor);      // Otključavanje monitora
+}
+
+// Funkcija dretve za svakog filozofa
+void* filozof_dretva(void* arg) {
+    int i = *(int*)arg;      // Preuzima ID filozofa
+    free(arg);               // Oslobađa memoriju koja je alocirana u main-u
+
+    while (1) {              // Beskonačna petlja: razmišljanje -> jedenje -> puštanje vilica
+        misliti();          // Filozof razmišlja
+        jesti(i);           // Zatim pokušava jesti
+        pusti_vilice(i);    // Nakon toga pušta vilice
+    }
+
+    return NULL;            // Nije obavezno, ali dobra praksa
+}
+
+// Glavna funkcija
+int main() {
+    pthread_t dretve[N];     // Niz dretvi za svakog filozofa
+
+    // Inicijalizacija filozofa i vilica
+    for (int i = 0; i < N; i++) {
+        filozof[i] = MISLI;                  // Svi filozofi počinju razmišljati
+        vilica[i] = 1;                       // Sve vilice su slobodne
+        pthread_cond_init(&red[i], NULL);   // Inicijalizacija uvjetnih varijabli
+    }
+
+    // Stvaranje dretvi za svakog filozofa
+    for (int i = 0; i < N; i++) {
+        int* id = malloc(sizeof(int));      // Dinamička alokacija ID-a filozofa
+        *id = i;                            // Postavljanje ID-a
+        pthread_create(&dretve[i], NULL, filozof_dretva, id);  // Pokretanje dretve
+    }
+
+    // Čekanje da sve dretve završe (iako nikada neće jer su u beskonačnoj petlji)
+    for (int i = 0; i < N; i++) {
+        pthread_join(dretve[i], NULL);     // Čekanje završetka dretve
+    }
+
+    return 0;  // Kraj programa (nikad se ne dosegne)
+}
