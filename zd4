@@ -1,0 +1,133 @@
+#include <stdio.h>          // Standardna biblioteka za ulaz/izlaz (printf, itd.)
+#include <stdlib.h>         // Standardna biblioteka za opće funkcije (exit, malloc, itd.)
+#include <unistd.h>         // Biblioteka za POSIX funkcije (fork, sleep, usleep, itd.)
+#include <semaphore.h>      // Biblioteka za rad sa semaforima
+#include <fcntl.h>          // Potrebna za konstante O_CREAT, O_RDWR itd.
+#include <sys/mman.h>       // Biblioteka za mapiranje memorije (mmap, munmap)
+#include <sys/wait.h>       // Omogućava čekanje child procesa (wait, waitpid)
+
+#define N 3                 // Broj mjesta u vrtuljku
+#define M 18                // Ukupan broj posjetitelja
+
+#define SEM_MJESTA "/sem_mjesta"  // Ime semafora koji broji slobodna mjesta
+#define SEM_SIDJI  "/sem_sidji"   // Ime semafora koji označava da treba sići
+#define SEM_MUTEX  "/sem_mutex"   // Ime semafora za zaštitu pristupa dijeljenim varijablama
+
+// Funkcija koju izvršava svaki posjetitelj
+void posjetitelj(int id, int* voznja_u_tijeku, int* preostalo_posjetitelja) {
+    sem_t* mjesta = sem_open(SEM_MJESTA, 0);    // Otvaranje semafora za mjesta
+    sem_t* sidji = sem_open(SEM_SIDJI, 0);      // Otvaranje semafora za silazak
+    sem_t* mutex = sem_open(SEM_MUTEX, 0);      // Otvaranje semafora za zaštitu pristupa varijablama
+
+    while (1) {                                  // Beskonačna petlja dok ne sjedne i ne siđe
+        sem_wait(mutex);                         // Zaključaj pristup voznji_u_tijeku i preostalo_posjetitelja
+        if (*voznja_u_tijeku == 0) {             // Ako vožnja nije u tijeku
+            if (sem_trywait(mjesta) == 0) {      // Pokušaj zauzeti mjesto
+                printf("Posjetitelj %d je sjeo.\n", id);  // Ispis poruke da je sjeo
+                sem_post(mutex);                 // Otključaj pristup
+
+                sem_wait(sidji);                 // Čekaj da vožnja završi
+                printf("Posjetitelj %d silazi.\n", id);  // Ispis poruke da silazi
+
+                sem_wait(mutex);                 // Zaključaj da smanjiš broj preostalih posjetitelja
+                (*preostalo_posjetitelja)--;     // Smanji broj preostalih
+                sem_post(mutex);                 // Otključaj
+
+                exit(0);                         // Završi child proces posjetitelja
+            }
+        }
+        sem_post(mutex);                         // Otključaj ako vožnja u tijeku ili nema mjesta
+        usleep(100000);                          // Pauza 0.1 sekunda prije ponovnog pokušaja
+    }
+}
+
+// Funkcija za proces vrtuljka
+void vrtuljak(int* voznja_u_tijeku, int* preostalo_posjetitelja) {
+    sem_t* mjesta = sem_open(SEM_MJESTA, 0);     // Otvaranje semafora za mjesta
+    sem_t* sidji = sem_open(SEM_SIDJI, 0);       // Otvaranje semafora za silazak
+    sem_t* mutex = sem_open(SEM_MUTEX, 0);       // Otvaranje semafora za zaštitu pristupa varijablama
+
+    while (1) {                                   // Beskonačna petlja dok svi ne prođu
+        sem_wait(mutex);                          // Zaključaj za pristup preostalo_posjetitelja
+        int gotovi = (*preostalo_posjetitelja == 0); // Provjeri je li gotovo
+        sem_post(mutex);                          // Otključaj
+
+        if (gotovi) break;                        // Izađi ako su svi prošli
+
+        int slobodno;                             // Varijabla za broj slobodnih mjesta
+        do {
+            sem_getvalue(mjesta, &slobodno);      // Dohvati broj slobodnih mjesta
+            sleep(1);                             // Pauza 1 sekundu
+
+            sem_wait(mutex);                      // Ponovno provjeri je li gotovo
+            gotovi = (*preostalo_posjetitelja == 0);
+            sem_post(mutex);
+
+            if (gotovi) break;                    // Izađi ako su svi prošli
+        } while (slobodno > 0);                   // Čekaj dok sva mjesta nisu zauzeta
+
+        if (gotovi) break;                        // I još jednom provjera
+
+        sem_wait(mutex);                          // Označi početak vožnje
+        *voznja_u_tijeku = 1;                     // Postavi voznja_u_tijeku na 1
+        sem_post(mutex);                          // Otključaj
+
+        printf("\n[VOŽNJA] Vrtuljak se pokreće!\n");  // Ispis poruke o početku vožnje
+        sleep(3);                                 // Simulacija trajanja vožnje
+        printf("[VOŽNJA] Vrtuljak se zaustavlja.\n"); // Ispis poruke o kraju
+
+        sem_wait(mutex);                          // Označi kraj vožnje
+        *voznja_u_tijeku = 0;                     // Postavi voznja_u_tijeku na 0
+        sem_post(mutex);                          // Otključaj
+
+        for (int i = 0; i < N; i++) {             // Pusti sve posjetitelje da siđu
+            sem_post(sidji);                      // Signal za silazak
+            sem_post(mjesta);                     // Oslobađa mjesto
+        }
+
+        sleep(1);                                 // Pauza prije nove vožnje
+    }
+
+    printf("[INFO] Vrtuljak završava s radom.\n"); // Poruka o završetku rada
+    exit(0);                                       // Završi vrtuljak proces
+}
+
+// Glavna funkcija
+int main() {
+    int* voznja_u_tijeku = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);  // Dijeljena memorija za status vožnje
+    *voznja_u_tijeku = 0;               // Inicijalno vožnja nije u tijeku
+
+    int* preostalo_posjetitelja = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);  // Dijeljena memorija za broj preostalih
+    *preostalo_posjetitelja = M;        // Ukupno M posjetitelja
+
+    sem_unlink(SEM_MJESTA);             // Obriši stare semafore ako postoje
+    sem_unlink(SEM_SIDJI);
+    sem_unlink(SEM_MUTEX);
+
+    sem_t* mjesta = sem_open(SEM_MJESTA, O_CREAT, 0644, N);  // Kreiraj semafor za mjesta, početna vrijednost N
+    sem_t* sidji  = sem_open(SEM_SIDJI,  O_CREAT, 0644, 0);  // Semafor za silazak, početno 0
+    sem_t* mutex  = sem_open(SEM_MUTEX, O_CREAT, 0644, 1);   // Semafor za zaštitu pristupa, početno 1
+
+    if (fork() == 0) {                   // Kreiraj child proces za vrtuljak
+        vrtuljak(voznja_u_tijeku, preostalo_posjetitelja);  // Pokreni funkciju vrtuljka
+    }
+
+    for (int i = 0; i < M; i++) {        // Kreiraj M posjetitelja
+        if (fork() == 0) {               // Svaki put novi child proces
+            posjetitelj(i + 1, voznja_u_tijeku, preostalo_posjetitelja);  // Pokreni posjetitelja s ID-em
+        }
+        usleep(150000);                  // Pauza između kreiranja posjetitelja
+    }
+
+    for (int i = 0; i < M + 1; i++) {    // Čekaj da svi child procesi završe
+        wait(NULL);                      // Čeka jedan child proces
+    }
+
+    sem_unlink(SEM_MJESTA);             // Očisti semafore
+    sem_unlink(SEM_SIDJI);
+    sem_unlink(SEM_MUTEX);
+    munmap(voznja_u_tijeku, sizeof(int));        // Oslobodi dijeljenu memoriju
+    munmap(preostalo_posjetitelja, sizeof(int)); // Isto
+
+    return 0;                           // Kraj glavnog programa
+}
